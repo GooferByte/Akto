@@ -1,0 +1,20 @@
+# Compiled binaries
+bin/
+/bin/akto
+
+# Sensitive config — never commit real keys
+.env
+
+# Runtime output (top-level only — does not affect internal/output/ package)
+/output/
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# IDE / editor
+.magicodeconfig
+.idea/
+.vscode/
+*.swp
