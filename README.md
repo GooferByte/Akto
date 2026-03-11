@@ -2,7 +2,7 @@
 
 An autonomous AI agent that accepts any GitHub repository URL and extracts all REST API endpoints with full request/response schemas, outputting an **OpenAPI 3.0** specification.
 
-Built using **Go**, **Gemini 2.5 Flash**, **Uber FX**, and **Zap**.
+Built using **Go**, **Uber FX**, and **Zap**.
 
 ---
 
@@ -13,7 +13,7 @@ GitHub URL
     │
     ▼
 ┌─────────┐    ┌──────────────────────────────────────────────┐    ┌──────────────┐
-│  Cloner │───▶│  Autonomous Gemini Agent (tool-calling loop) │───▶│ Schema Build │
+│  Cloner │───▶│       Autonomous AI Agent (tool-calling)     │───▶│ Schema Build │
 │  git    │    │                                              │    │  OpenAPI 3.0 │
 └─────────┘    │  Tools available to the agent:               │    └──────┬───────┘
                │  • list_directory(path)                      │           │
@@ -33,7 +33,7 @@ The agent autonomously navigates the repository — reading route files, tracing
 ## Prerequisites
 
 - **Go 1.23+**
-- **Gemini API key** — get one free at [Google AI Studio](https://aistudio.google.com/app/apikey)
+- **AI API key** — configured via `.env`
 - **git** installed locally (used for cloning repositories)
 
 ---
@@ -45,9 +45,9 @@ The agent autonomously navigates the repository — reading route files, tracing
 git clone https://github.com/GooferByte/Akto.git
 cd Akto
 
-# 2. Add your Gemini API key to .env
+# 2. Configure your API key
 cp .env.example .env
-# Edit .env and set GEMINI_API_KEY=<your key>
+# Edit .env and fill in the required values
 
 # 3. Install dependencies
 go mod download
@@ -96,8 +96,8 @@ All configuration is via `.env` (or environment variables):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GEMINI_API_KEY` | *required* | Google AI Studio API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model to use |
+| `GEMINI_API_KEY` | *required* | AI model API key |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | AI model to use |
 | `OUTPUT_DIR` | `output` | Directory for output files |
 | `GITHUB_TOKEN` | *(optional)* | Used for private repos or to avoid rate limiting |
 
@@ -115,7 +115,7 @@ All configuration is via `.env` (or environment variables):
 │   ├── logger/logger.go         # Zap logger + FX event logger
 │   ├── cloner/cloner.go         # Shallow git clone via native git binary
 │   ├── agent/
-│   │   ├── agent.go             # Gemini autonomous tool-calling loop
+│   │   ├── agent.go             # Autonomous AI tool-calling loop
 │   │   ├── tools.go             # Tool executor (list_dir, read_file, search)
 │   │   └── types.go             # ExtractedAPI, ExtractedParam types
 │   ├── schema/
@@ -134,7 +134,6 @@ All configuration is via `.env` (or environment variables):
 
 | Concern | Library |
 |---------|---------|
-| AI Agent | [Gemini 2.5 Flash](https://ai.google.dev/) via `github.com/google/generative-ai-go` |
 | Dependency Injection | [Uber FX](https://github.com/uber-go/fx) |
 | Structured Logging | [Uber Zap](https://github.com/uber-go/zap) |
 | Config | [Viper](https://github.com/spf13/viper) |
