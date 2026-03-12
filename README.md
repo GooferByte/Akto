@@ -96,10 +96,13 @@ All configuration is via `.env` (or environment variables):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GEMINI_API_KEY` | *required* | AI model API key |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | AI model to use |
+| `LLM_PROVIDER` | `openai` | LLM provider to use (`openai`, with more coming) |
+| `LLM_API_KEY` | *required* | API key for the configured provider |
+| `LLM_MODEL` | `gpt-5-mini` | Model name to use |
 | `OUTPUT_DIR` | `output` | Directory for output files |
 | `GITHUB_TOKEN` | *(optional)* | Used for private repos or to avoid rate limiting |
+
+> **Backward compat:** `OPENAI_API_KEY` and `OPENAI_MODEL` are still accepted as fallbacks.
 
 ---
 
@@ -114,6 +117,9 @@ All configuration is via `.env` (or environment variables):
 │   ├── config/config.go         # Configuration loading (Viper + .env)
 │   ├── logger/logger.go         # Zap logger + FX event logger
 │   ├── cloner/cloner.go         # Shallow git clone via native git binary
+│   ├── llm/
+│   │   ├── llm.go               # Provider-agnostic LLM client interface
+│   │   └── openai.go            # OpenAI adapter implementation
 │   ├── agent/
 │   │   ├── agent.go             # Autonomous AI tool-calling loop
 │   │   ├── tools.go             # Tool executor (list_dir, read_file, search)

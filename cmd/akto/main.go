@@ -9,11 +9,11 @@ import (
 	"github.com/GooferByte/Akto/internal/agent"
 	"github.com/GooferByte/Akto/internal/cloner"
 	"github.com/GooferByte/Akto/internal/config"
+	"github.com/GooferByte/Akto/internal/llm"
 	"github.com/GooferByte/Akto/internal/logger"
 	"github.com/GooferByte/Akto/internal/output"
 	"github.com/GooferByte/Akto/internal/schema"
 	"go.uber.org/fx"
-	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
 )
 
@@ -27,9 +27,6 @@ func main() {
 
 	// Populate lets us extract resolved dependencies out of the FX container
 	// so we can drive the pipeline sequentially (start → run → stop).
-	// This avoids the anti-pattern of spawning a goroutine inside an OnStart
-	// hook and calling os.Exit(), which skips OnStop cleanup (e.g. closing the
-	// Gemini gRPC client).
 	var (
 		c   *cloner.Cloner
 		a   *agent.Agent
@@ -39,15 +36,17 @@ func main() {
 	)
 
 	app := fx.New(
-		fx.WithLogger(func(l *zap.Logger) fxevent.Logger {
-			return logger.FxEventLogger(l)
-		}),
+		fx.NopLogger,
 		config.Module,
 		logger.Module,
 		cloner.Module,
 		agent.Module,
 		schema.Module,
 		output.Module,
+		// Provide an LLM client using the configured provider and API key.
+		fx.Provide(func(cfg *config.Config) (llm.Client, error) {
+			return llm.NewClient(cfg.LLMProvider, cfg.LLMAPIKey)
+		}),
 		fx.Populate(&c, &a, &b, &w, &log),
 	)
 
@@ -62,7 +61,7 @@ func main() {
 	// ── Pipeline: run synchronously so panics/errors propagate cleanly ──
 	pipelineErr := runPipeline(repoURL, c, a, b, w, log)
 
-	// ── Stop: graceful shutdown — OnStop hooks run here (closes Gemini client) ──
+	// ── Stop: graceful shutdown — OnStop hooks run here ──
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stopCancel()
 	if err := app.Stop(stopCtx); err != nil {
@@ -77,7 +76,7 @@ func main() {
 
 // runPipeline executes the four-stage extraction pipeline:
 //  1. Clone the repository
-//  2. Run the autonomous Gemini agent
+//  2. Run the autonomous LLM agent
 //  3. Build the OpenAPI 3.0 spec
 //  4. Write all output files
 func runPipeline(

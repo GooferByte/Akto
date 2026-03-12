@@ -6,10 +6,9 @@ import (
 	"fmt"
 
 	"github.com/GooferByte/Akto/internal/config"
-	"github.com/google/generative-ai-go/genai"
+	"github.com/GooferByte/Akto/internal/llm"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
-	"google.golang.org/api/option"
 )
 
 const (
@@ -73,9 +72,9 @@ When you are finished, call submit_apis with apis_json set to a valid JSON array
 Be thorough — do NOT call submit_apis until you have covered every route file in the repository.`
 )
 
-// Agent runs an autonomous tool-calling loop powered by Gemini to extract API endpoints.
+// Agent runs an autonomous tool-calling loop powered by an LLM to extract API endpoints.
 type Agent struct {
-	client    *genai.Client
+	client    llm.Client
 	modelName string
 	log       *zap.Logger
 }
@@ -84,28 +83,16 @@ type Agent struct {
 type AgentParams struct {
 	fx.In
 
-	Config *config.Config
-	Log    *zap.Logger
+	LLMClient llm.Client
+	Config    *config.Config
+	Log       *zap.Logger
 }
 
-// New creates an Agent and registers a lifecycle hook to close the Gemini client on shutdown.
-func New(lc fx.Lifecycle, p AgentParams) (*Agent, error) {
-	ctx := context.Background()
-
-	client, err := genai.NewClient(ctx, option.WithAPIKey(p.Config.GeminiAPIKey))
-	if err != nil {
-		return nil, fmt.Errorf("create gemini client: %w", err)
-	}
-
-	lc.Append(fx.Hook{
-		OnStop: func(_ context.Context) error {
-			return client.Close()
-		},
-	})
-
+// New creates an Agent backed by the configured LLM provider.
+func New(p AgentParams) (*Agent, error) {
 	return &Agent{
-		client:    client,
-		modelName: p.Config.GeminiModel,
+		client:    p.LLMClient,
+		modelName: p.Config.LLMModel,
 		log:       p.Log.Named("agent"),
 	}, nil
 }
@@ -113,13 +100,7 @@ func New(lc fx.Lifecycle, p AgentParams) (*Agent, error) {
 // Run executes the autonomous agent loop against the locally cloned repository at repoPath.
 // It returns the full list of extracted API endpoints when the agent calls submit_apis.
 func (a *Agent) Run(ctx context.Context, repoPath string) ([]*ExtractedAPI, error) {
-	model := a.client.GenerativeModel(a.modelName)
-	model.Tools = buildTools()
-	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text(systemPrompt)},
-	}
-
-	session := model.StartChat()
+	tools := buildTools()
 	executor := newToolExecutor(repoPath, a.log)
 
 	initialMsg := fmt.Sprintf(
@@ -129,96 +110,111 @@ func (a *Agent) Run(ctx context.Context, repoPath string) ([]*ExtractedAPI, erro
 		repoPath,
 	)
 
-	a.log.Info("starting agent loop", zap.String("model", a.modelName), zap.String("repo", repoPath))
-
-	resp, err := session.SendMessage(ctx, genai.Text(initialMsg))
-	if err != nil {
-		return nil, fmt.Errorf("initial agent message: %w", err)
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: systemPrompt},
+		{Role: llm.RoleUser, Content: initialMsg},
 	}
+
+	a.log.Info("starting agent loop", zap.String("model", a.modelName), zap.String("repo", repoPath))
 
 	var apis []*ExtractedAPI
 
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		a.log.Info("agent iteration", zap.Int("iteration", iteration+1))
 
-		// Guard: empty response means the model has nothing more to say
-		if resp == nil || len(resp.Candidates) == 0 {
-			a.log.Warn("model returned empty response — ending loop",
-				zap.Int("iteration", iteration+1),
-			)
+		resp, err := a.client.ChatCompletion(ctx, a.modelName, messages, tools)
+		if err != nil {
+			return nil, fmt.Errorf("chat completion (iteration %d): %w", iteration+1, err)
+		}
+
+		if resp.Content == "" && len(resp.ToolCalls) == 0 {
+			a.log.Warn("model returned empty response — ending loop", zap.Int("iteration", iteration+1))
 			break
 		}
 
-		var toolResponses []genai.Part
+		// Log any text content from the assistant
+		if resp.Content != "" {
+			a.log.Info("agent reasoning", zap.String("text", truncateLog(resp.Content, 300)))
+		}
+
+		// Append the assistant's message to the conversation history
+		messages = append(messages, llm.Message{
+			Role:      llm.RoleAssistant,
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		// If no tool calls, the model is done
+		if len(resp.ToolCalls) == 0 {
+			a.log.Warn("agent stopped issuing tool calls before submit_apis — ending loop")
+			break
+		}
+
 		done := false
 
-		for _, candidate := range resp.Candidates {
-			if candidate.Content == nil {
+		for _, toolCall := range resp.ToolCalls {
+			name := toolCall.Function
+
+			// Parse arguments from JSON string
+			var args map[string]any
+			if err := json.Unmarshal([]byte(toolCall.Arguments), &args); err != nil {
+				a.log.Error("failed to parse tool arguments",
+					zap.String("tool", name),
+					zap.Error(err),
+				)
+				messages = append(messages, llm.Message{
+					Role:       llm.RoleTool,
+					Content:    fmt.Sprintf(`{"error": "invalid arguments: %s"}`, err.Error()),
+					ToolCallID: toolCall.ID,
+				})
 				continue
 			}
-			for _, part := range candidate.Content.Parts {
-				switch v := part.(type) {
 
-				case genai.FunctionCall:
-					a.log.Info("tool call",
-						zap.String("tool", v.Name),
-						zap.Any("args", sanitiseArgs(v.Args)),
-					)
+			a.log.Info("tool call",
+				zap.String("tool", name),
+				zap.Any("args", sanitiseArgs(args)),
+			)
 
-					if v.Name == "submit_apis" {
-						extracted, parseErr := parseSubmitAPIs(v.Args, a.log)
-						if parseErr != nil {
-							a.log.Error("submit_apis parse error", zap.Error(parseErr))
-							toolResponses = append(toolResponses, genai.FunctionResponse{
-								Name:     v.Name,
-								Response: map[string]any{"error": parseErr.Error()},
-							})
-							continue
-						}
-						apis = extracted
-						done = true
-						a.log.Info("agent submitted APIs", zap.Int("count", len(apis)))
-						toolResponses = append(toolResponses, genai.FunctionResponse{
-							Name:     v.Name,
-							Response: map[string]any{"status": "received", "count": len(apis)},
-						})
-
-					} else {
-						result, toolErr := executor.Execute(v.Name, v.Args)
-						errStr := ""
-						if toolErr != nil {
-							a.log.Warn("tool error", zap.String("tool", v.Name), zap.Error(toolErr))
-							errStr = toolErr.Error()
-						}
-						toolResponses = append(toolResponses, genai.FunctionResponse{
-							Name: v.Name,
-							Response: map[string]any{
-								"result": result,
-								"error":  errStr,
-							},
-						})
-					}
-
-				case genai.Text:
-					if s := string(v); s != "" {
-						a.log.Info("agent reasoning", zap.String("text", truncateLog(s, 300)))
-					}
+			if name == "submit_apis" {
+				extracted, parseErr := parseSubmitAPIs(args, a.log)
+				if parseErr != nil {
+					a.log.Error("submit_apis parse error", zap.Error(parseErr))
+					messages = append(messages, llm.Message{
+						Role:       llm.RoleTool,
+						Content:    fmt.Sprintf(`{"error": %q}`, parseErr.Error()),
+						ToolCallID: toolCall.ID,
+					})
+					continue
 				}
+				apis = extracted
+				done = true
+				a.log.Info("agent submitted APIs", zap.Int("count", len(apis)))
+				messages = append(messages, llm.Message{
+					Role:       llm.RoleTool,
+					Content:    fmt.Sprintf(`{"status": "received", "count": %d}`, len(apis)),
+					ToolCallID: toolCall.ID,
+				})
+			} else {
+				result, toolErr := executor.Execute(name, args)
+				errStr := ""
+				if toolErr != nil {
+					a.log.Warn("tool error", zap.String("tool", name), zap.Error(toolErr))
+					errStr = toolErr.Error()
+				}
+				respJSON, _ := json.Marshal(map[string]any{
+					"result": result,
+					"error":  errStr,
+				})
+				messages = append(messages, llm.Message{
+					Role:       llm.RoleTool,
+					Content:    string(respJSON),
+					ToolCallID: toolCall.ID,
+				})
 			}
 		}
 
 		if done {
 			break
-		}
-
-		if len(toolResponses) == 0 {
-			a.log.Warn("agent stopped issuing tool calls before submit_apis — ending loop")
-			break
-		}
-
-		resp, err = session.SendMessage(ctx, toolResponses...)
-		if err != nil {
-			return nil, fmt.Errorf("send tool responses (iteration %d): %w", iteration+1, err)
 		}
 	}
 
@@ -229,46 +225,63 @@ func (a *Agent) Run(ctx context.Context, repoPath string) ([]*ExtractedAPI, erro
 	return apis, nil
 }
 
-// buildTools returns the Gemini tool declarations for the agent.
-func buildTools() []*genai.Tool {
-	str := func(desc string) *genai.Schema {
-		return &genai.Schema{Type: genai.TypeString, Description: desc}
-	}
-	obj := func(props map[string]*genai.Schema, required []string) *genai.Schema {
-		return &genai.Schema{Type: genai.TypeObject, Properties: props, Required: required}
-	}
-
-	return []*genai.Tool{
+// buildTools returns the tool declarations for the agent.
+func buildTools() []llm.ToolDef {
+	return []llm.ToolDef{
 		{
-			FunctionDeclarations: []*genai.FunctionDeclaration{
-				{
-					Name:        "list_directory",
-					Description: "List files and sub-directories at the given path (relative to repo root). Use \".\" for root.",
-					Parameters: obj(map[string]*genai.Schema{
-						"path": str("Relative path from repository root. Use \".\" for root directory."),
-					}, []string{"path"}),
+			Name:        "list_directory",
+			Description: "List files and sub-directories at the given path (relative to repo root). Use \".\" for root.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]string{
+						"type":        "string",
+						"description": "Relative path from repository root. Use \".\" for root directory.",
+					},
 				},
-				{
-					Name:        "read_file",
-					Description: "Read the full contents of a file (relative to repo root). Large files are automatically truncated.",
-					Parameters: obj(map[string]*genai.Schema{
-						"path": str("Relative file path from repository root."),
-					}, []string{"path"}),
+				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        "read_file",
+			Description: "Read the full contents of a file (relative to repo root). Large files are automatically truncated.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]string{
+						"type":        "string",
+						"description": "Relative file path from repository root.",
+					},
 				},
-				{
-					Name:        "search_code",
-					Description: "Case-insensitive grep across all .js / .ts / .mjs files in the repository (node_modules excluded). Returns matching lines with file:line references.",
-					Parameters: obj(map[string]*genai.Schema{
-						"pattern": str("Text pattern to search for (case-insensitive)."),
-					}, []string{"pattern"}),
+				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        "search_code",
+			Description: "Case-insensitive grep across all .js / .ts / .mjs files in the repository (node_modules excluded). Returns matching lines with file:line references.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": map[string]string{
+						"type":        "string",
+						"description": "Text pattern to search for (case-insensitive).",
+					},
 				},
-				{
-					Name:        "submit_apis",
-					Description: "Call this ONLY when you have finished analysing all route files. Submit the complete list of extracted API endpoints as a JSON array string.",
-					Parameters: obj(map[string]*genai.Schema{
-						"apis_json": str("A valid JSON array string of API endpoint objects following the schema defined in your instructions."),
-					}, []string{"apis_json"}),
+				"required": []string{"pattern"},
+			},
+		},
+		{
+			Name:        "submit_apis",
+			Description: "Call this ONLY when you have finished analysing all route files. Submit the complete list of extracted API endpoints as a JSON array string.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"apis_json": map[string]string{
+						"type":        "string",
+						"description": "A valid JSON array string of API endpoint objects following the schema defined in your instructions.",
+					},
 				},
+				"required": []string{"apis_json"},
 			},
 		},
 	}

@@ -37,9 +37,10 @@ func (c *Cloner) Clone(ctx context.Context, repoURL string) (*Result, error) {
 	c.log.Info("cloning repository", zap.String("url", repoURL), zap.String("dest", tmpDir))
 
 	opts := &git.CloneOptions{
-		URL:      repoURL,
-		Depth:    1, // shallow clone — we only need the latest snapshot
-		Progress: os.Stdout,
+		URL:          repoURL,
+		Depth:        1,    // shallow clone — we only need the latest snapshot
+		SingleBranch: true, // only fetch the default branch for speed
+		Progress:     os.Stdout,
 	}
 
 	// If a GITHUB_TOKEN env var is set, use it to avoid rate-limiting on private repos

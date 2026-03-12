@@ -13,9 +13,10 @@ import (
 //  2. .env file
 //  3. Defaults defined below
 type Config struct {
-	GeminiAPIKey string
-	GeminiModel  string
-	OutputDir    string
+	LLMProvider string
+	LLMAPIKey   string
+	LLMModel    string
+	OutputDir   string
 }
 
 // New loads configuration using Viper.
@@ -25,7 +26,7 @@ func New() (*Config, error) {
 	v := viper.New()
 
 	// Defaults
-	v.SetDefault("GEMINI_MODEL", "gemini-2.5-flash")
+	v.SetDefault("LLM_PROVIDER", "openai")
 	v.SetDefault("OUTPUT_DIR", "output")
 
 	// Read from .env file (KEY=VALUE format, no section headers)
@@ -44,15 +45,29 @@ func New() (*Config, error) {
 		// File simply doesn't exist — that's fine, rely on OS env vars
 	}
 
-	apiKey := v.GetString("GEMINI_API_KEY")
+	// LLM_API_KEY with fallback to OPENAI_API_KEY for backward compat
+	apiKey := v.GetString("LLM_API_KEY")
 	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY is not set — add it to .env or export it as an environment variable")
+		apiKey = v.GetString("OPENAI_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("LLM_API_KEY is not set — add it to .env or export it as an environment variable (OPENAI_API_KEY is also accepted)")
+	}
+
+	// LLM_MODEL with fallback to OPENAI_MODEL for backward compat
+	model := v.GetString("LLM_MODEL")
+	if model == "" {
+		model = v.GetString("OPENAI_MODEL")
+	}
+	if model == "" {
+		model = "gpt-5-mini"
 	}
 
 	return &Config{
-		GeminiAPIKey: apiKey,
-		GeminiModel:  v.GetString("GEMINI_MODEL"),
-		OutputDir:    v.GetString("OUTPUT_DIR"),
+		LLMProvider: v.GetString("LLM_PROVIDER"),
+		LLMAPIKey:   apiKey,
+		LLMModel:    model,
+		OutputDir:   v.GetString("OUTPUT_DIR"),
 	}, nil
 }
 
