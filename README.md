@@ -34,7 +34,7 @@ The agent autonomously navigates the repository — reading route files, tracing
 
 - **Go 1.23+**
 - **AI API key** — configured via `.env`
-- **git** installed locally (used for cloning repositories)
+- **git** *(optional)* — only needed if `GITHUB_TOKEN` is not set and the repo is private
 
 ---
 
@@ -137,5 +137,5 @@ All configuration is via `.env` (or environment variables):
 | Dependency Injection | [Uber FX](https://github.com/uber-go/fx) |
 | Structured Logging | [Uber Zap](https://github.com/uber-go/zap) |
 | Config | [Viper](https://github.com/spf13/viper) |
-| Git Cloning | Native `git` binary via `os/exec` |
+| Git Cloning | [go-git](https://github.com/go-git/go-git) (pure Go) |
 | YAML Output | [gopkg.in/yaml.v3](https://pkg.go.dev/gopkg.in/yaml.v3) |

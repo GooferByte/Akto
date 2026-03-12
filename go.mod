@@ -2,6 +2,8 @@ module github.com/GooferByte/Akto
 
 go 1.25.0
 
+toolchain go1.26.0
+
 require (
 	github.com/go-git/go-git/v5 v5.17.0
 	github.com/google/generative-ai-go v0.20.1

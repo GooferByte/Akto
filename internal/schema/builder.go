@@ -26,7 +26,7 @@ func (b *Builder) Build(apis []*agent.ExtractedAPI, repoURL string) *OpenAPISpec
 	spec := &OpenAPISpec{
 		OpenAPI: "3.0.3",
 		Info: &Info{
-			Title:       "OWASP Juice Shop API",
+			Title:       repoTitle(repoURL),
 			Description: fmt.Sprintf("Automatically extracted from %s on %s", repoURL, time.Now().Format("2006-01-02")),
 			Version:     "1.0.0",
 		},
@@ -216,22 +216,55 @@ func successStatus(method string) string {
 	}
 }
 
+// repoTitle derives a human-readable API title from a GitHub repository URL.
+// e.g. "https://github.com/juice-shop/juice-shop" → "juice-shop API"
+func repoTitle(repoURL string) string {
+	trimmed := strings.TrimSuffix(repoURL, ".git")
+	trimmed = strings.TrimRight(trimmed, "/")
+	if i := strings.LastIndex(trimmed, "/"); i >= 0 {
+		return trimmed[i+1:] + " API"
+	}
+	return "Extracted API"
+}
+
 // setOperation assigns an operation to the matching method field on a PathItem.
+// Returns an error if the method is unsupported or if the slot is already occupied (duplicate).
 func setOperation(item *PathItem, method string, op *Operation) error {
 	switch method {
 	case "get":
+		if item.Get != nil {
+			return fmt.Errorf("duplicate GET operation")
+		}
 		item.Get = op
 	case "post":
+		if item.Post != nil {
+			return fmt.Errorf("duplicate POST operation")
+		}
 		item.Post = op
 	case "put":
+		if item.Put != nil {
+			return fmt.Errorf("duplicate PUT operation")
+		}
 		item.Put = op
 	case "delete":
+		if item.Delete != nil {
+			return fmt.Errorf("duplicate DELETE operation")
+		}
 		item.Delete = op
 	case "patch":
+		if item.Patch != nil {
+			return fmt.Errorf("duplicate PATCH operation")
+		}
 		item.Patch = op
 	case "options":
+		if item.Options != nil {
+			return fmt.Errorf("duplicate OPTIONS operation")
+		}
 		item.Options = op
 	case "head":
+		if item.Head != nil {
+			return fmt.Errorf("duplicate HEAD operation")
+		}
 		item.Head = op
 	default:
 		return fmt.Errorf("unsupported HTTP method: %s", method)
